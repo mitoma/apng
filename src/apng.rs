@@ -3,6 +3,8 @@ use byteorder::{BigEndian, WriteBytesExt};
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use flate2::Crc;
+use image::imageops::vertical_gradient;
+use log::info;
 use std::io::{self, Write};
 use std::mem;
 
@@ -58,6 +60,36 @@ impl<'a, W: io::Write> Encoder<'a, W> {
         Self::write_ihdr(&mut e)?;
         Self::write_ac_tl(&mut e)?;
         Ok(e)
+    }
+
+    // all png images encode to apng
+    pub fn encode_all_parallel(
+        &mut self,
+        images: Vec<PNGImage>,
+        frame: Option<&Frame>,
+    ) -> APNGResult<()> {
+        use rayon::prelude::*;
+
+        let datas: Vec<Vec<u8>> = images
+            .par_iter()
+            .flat_map(|v| Self::make_image_buffer_2(self.config.clone(), &v.data))
+            .collect();
+
+        for (i, v) in datas.iter().enumerate() {
+            if i == 0 {
+                Self::write_fc_tl(self, frame)?;
+                self.write_chunk(&v, *b"IDAT")?;
+            } else {
+                Self::write_fc_tl(self, frame)?;
+                let mut buf: Vec<u8> = vec![];
+                buf.write_u32::<BigEndian>(self.seq_num)?;
+                buf.write(&v)?;
+                self.write_chunk(&buf, *b"fdAT")?;
+                self.seq_num += 1;
+            }
+        }
+        Self::write_iend(self)?;
+        Ok(())
     }
 
     // all png images encode to apng
@@ -166,6 +198,34 @@ impl<'a, W: io::Write> Encoder<'a, W> {
         Ok(())
     }
 
+    fn make_image_buffer_2(config: Config, data: &[u8]) -> APNGResult<Vec<u8>> {
+        let mut buf = vec![];
+
+        let bpp = config.bytes_per_pixel();
+        let in_len = config.raw_row_length() - 1;
+
+        let mut prev = vec![0; in_len];
+        let mut current = vec![0; in_len];
+
+        let data_size = in_len * config.height as usize;
+        if data_size != data.len() {
+            return Err(APNGError::WrongDataSize(data_size, data.len()));
+        }
+
+        let mut zlib = ZlibEncoder::new(&mut buf, Compression::best());
+        let filter_method = config.filter;
+
+        for line in data.chunks(in_len) {
+            current.copy_from_slice(line);
+            zlib.write_all(&[filter_method as u8])?;
+            filter(filter_method, bpp, &prev, &mut current);
+            zlib.write_all(&current)?;
+            mem::swap(&mut prev, &mut current);
+        }
+        zlib.finish()?;
+        Ok(buf)
+    }
+
     fn make_image_buffer(&mut self, data: &[u8], buf: &mut Vec<u8>) -> APNGResult<()> {
         let bpp = self.config.bytes_per_pixel();
         let in_len = self.config.raw_row_length() - 1;
@@ -195,6 +255,11 @@ impl<'a, W: io::Write> Encoder<'a, W> {
 
     // write chunk data 4 field
     fn write_chunk(&mut self, c_data: &[u8], c_type: [u8; 4]) -> APNGResult<()> {
+        info!(
+            "data_len: {}, c_type:{:?}",
+            c_data.len(),
+            String::from_utf8(c_type.to_vec())
+        );
         // Header(Length and Type)
         self.w.write_u32::<BigEndian>(c_data.len() as u32)?;
         self.w.write_all(&c_type)?;
