@@ -54,9 +54,9 @@ impl<'a, W: io::Write> Encoder<'a, W> {
             w: writer,
             seq_num: 0,
         };
-        Self::write_png_header(&mut e)?;
-        Self::write_ihdr(&mut e)?;
-        Self::write_ac_tl(&mut e)?;
+        e.write_png_header()?;
+        e.write_ihdr()?;
+        e.write_ac_tl()?;
         Ok(e)
     }
 
@@ -64,25 +64,25 @@ impl<'a, W: io::Write> Encoder<'a, W> {
     pub fn encode_all(&mut self, images: Vec<PNGImage>, frame: Option<&Frame>) -> APNGResult<()> {
         for (i, v) in images.iter().enumerate() {
             if i == 0 {
-                Self::write_fc_tl(self, frame)?;
-                Self::write_idats(self, &v.data)?;
+                self.write_fc_tl(frame)?;
+                self.write_idats(&v.data)?;
             } else {
-                Self::write_fc_tl(self, frame)?;
-                Self::write_fd_at(self, &v.data)?;
+                self.write_fc_tl(frame)?;
+                self.write_fd_at(&v.data)?;
             }
         }
-        Self::write_iend(self)?;
+        self.write_iend()?;
         Ok(())
     }
 
     // write each frame control
     pub fn write_frame(&mut self, image: &PNGImage, frame: Frame) -> APNGResult<()> {
         if self.seq_num == 0 {
-            Self::write_fc_tl(self, Some(&frame))?;
-            Self::write_idats(self, &image.data)?;
+            self.write_fc_tl(Some(&frame))?;
+            self.write_idats(&image.data)?;
         } else {
-            Self::write_fc_tl(self, Some(&frame))?;
-            Self::write_fd_at(self, &image.data)?;
+            self.write_fc_tl(Some(&frame))?;
+            self.write_fd_at(&image.data)?;
         }
 
         Ok(())
@@ -98,7 +98,7 @@ impl<'a, W: io::Write> Encoder<'a, W> {
             ));
         }
 
-        Self::write_iend(self)
+        self.write_iend()
     }
 
     fn write_png_header(&mut self) -> APNGResult<()> {
