@@ -166,7 +166,7 @@ impl<'a, W: io::Write> Encoder<'a, W> {
         Ok(())
     }
 
-    fn make_image_buffer(&mut self, data: &[u8], buf: &mut Vec<u8>) -> APNGResult<()> {
+    fn make_image_buffer(&self, data: &[u8], buf: &mut Vec<u8>) -> APNGResult<()> {
         let bpp = self.config.bytes_per_pixel();
         let in_len = self.config.raw_row_length() - 1;
 
