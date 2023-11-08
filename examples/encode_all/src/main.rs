@@ -1,9 +1,10 @@
-use apng::{load_dynamic_image, Encoder, Frame, PNGImage};
+use apng::{encode_with_stream, load_dynamic_image, Encoder, Frame, PNGImage};
 use log::info;
 
 use std::fs::File;
 use std::io::{BufWriter, Read};
 use std::path::Path;
+use std::sync::mpsc::channel;
 use std::time::SystemTime;
 
 fn main() {
@@ -26,6 +27,15 @@ fn main() {
         gen_parallel();
         info!(
             "finish parallel. {:?}",
+            SystemTime::now().duration_since(start)
+        );
+    }
+    {
+        info!("start  stream");
+        let start = SystemTime::now();
+        gen_stream();
+        info!(
+            "finish stream. {:?}",
             SystemTime::now().duration_since(start)
         );
     }
@@ -108,4 +118,42 @@ fn gen_parallel() {
         Ok(_n) => {}
         Err(err) => eprintln!("{}", err),
     }
+}
+
+fn gen_stream() {
+    let files = vec![
+        "../_rust_logo/rust_logo1.png",
+        "../_rust_logo/rust_logo2.png",
+        "../_rust_logo/rust_logo3.png",
+        "../_rust_logo/rust_logo4.png",
+        "../_rust_logo/rust_logo5.png",
+        "../_rust_logo/rust_logo6.png",
+    ];
+
+    let mut png_images: Vec<PNGImage> = Vec::new();
+
+    for f in files.iter() {
+        let mut file = File::open(f).unwrap();
+        let mut buffer = vec![];
+        file.read_to_end(&mut buffer).unwrap();
+        let img = image::load_from_memory(&buffer).unwrap();
+        png_images.push(load_dynamic_image(img).unwrap());
+    }
+
+    let path = Path::new(r"out3.png");
+    let mut out = BufWriter::new(File::create(path).unwrap());
+
+    let frame = Frame {
+        delay_num: Some(1),
+        delay_den: Some(2),
+        ..Default::default()
+    };
+
+    let rx = {
+        let (tx, rx) = channel::<PNGImage>();
+        png_images.into_iter().for_each(|f| tx.send(f).unwrap());
+        rx
+    };
+
+    encode_with_stream(rx, files.len() as u32, frame, &mut out);
 }

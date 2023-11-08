@@ -3,10 +3,11 @@ use byteorder::{BigEndian, WriteBytesExt};
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use flate2::Crc;
-use image::imageops::vertical_gradient;
 use log::info;
 use std::io::{self, Write};
 use std::mem;
+use std::sync::mpsc::channel;
+use std::sync::mpsc::Receiver;
 
 use crate::png::PNGImage;
 
@@ -42,6 +43,23 @@ impl Config {
     }
 }
 
+pub fn encode_with_stream<W: io::Write>(
+    image_channel: Receiver<PNGImage>,
+    num_frames: u32,
+    frame: Frame,
+    writer: &mut W,
+) {
+    let (tx, rx) = channel::<PNGImage>();
+    let first = image_channel.recv().unwrap();
+    let config = create_config_with_num_frames(&first, num_frames, None);
+    tx.send(first).unwrap();
+    std::thread::spawn(move || {
+        image_channel.iter().for_each(|f| tx.send(f).unwrap());
+    });
+    let mut encoder = Encoder::new(writer, config).unwrap();
+    encoder.encode_stream(rx, Some(&frame)).unwrap();
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Encoder<'a, W: io::Write> {
     config: Config,
@@ -60,6 +78,35 @@ impl<'a, W: io::Write> Encoder<'a, W> {
         Self::write_ihdr(&mut e)?;
         Self::write_ac_tl(&mut e)?;
         Ok(e)
+    }
+
+    // all png images encode to apng
+    pub fn encode_stream(
+        &mut self,
+        image_channel: Receiver<PNGImage>,
+        frame: Option<&Frame>,
+    ) -> APNGResult<()> {
+        use rayon_ordered_bridge::OrderedParallelBridge;
+        let config = self.config.clone();
+        let datas: Receiver<Vec<u8>> =
+            image_channel.ordered_parallel_receiver().map(32, move |v| {
+                Self::make_image_buffer_2(config.clone(), &v.data).unwrap()
+            });
+        for (i, v) in datas.iter().enumerate() {
+            if i == 0 {
+                Self::write_fc_tl(self, frame)?;
+                self.write_chunk(&v, *b"IDAT")?;
+            } else {
+                Self::write_fc_tl(self, frame)?;
+                let mut buf: Vec<u8> = vec![];
+                buf.write_u32::<BigEndian>(self.seq_num)?;
+                buf.write(&v)?;
+                self.write_chunk(&buf, *b"fdAT")?;
+                self.seq_num += 1;
+            }
+        }
+        Self::write_iend(self)?;
+        Ok(())
     }
 
     // all png images encode to apng
@@ -313,6 +360,22 @@ pub fn create_config(images: &Vec<PNGImage>, plays: Option<u32>) -> APNGResult<C
         depth: default_image.bit_depth,
         filter: png::FilterType::NoFilter, //default
     })
+}
+
+pub fn create_config_with_num_frames(
+    default_image: &PNGImage,
+    num_frames: u32,
+    plays: Option<u32>,
+) -> Config {
+    Config {
+        width: default_image.width,
+        height: default_image.height,
+        num_frames,
+        num_plays: plays.unwrap_or(0),
+        color: default_image.color_type,
+        depth: default_image.bit_depth,
+        filter: png::FilterType::NoFilter, //default
+    }
 }
 
 fn filter_path(a: u8, b: u8, c: u8) -> u8 {
