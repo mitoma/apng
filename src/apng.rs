@@ -65,11 +65,9 @@ impl<W: io::Write> Encoder<W> {
         for (i, v) in images.iter().enumerate() {
             let image_buffer = ImageBuffer::new(&self.config, v)?;
             if i == 0 {
-                self.write_fc_tl(frame)?;
-                self.write_idats(&image_buffer)?;
+                self.write_first_frame(&image_buffer, frame)?;
             } else {
-                self.write_fc_tl(frame)?;
-                self.write_fd_at(&image_buffer)?;
+                self.write_rest_frame(&image_buffer, frame)?;
             }
         }
         self.write_iend()?;
@@ -80,14 +78,28 @@ impl<W: io::Write> Encoder<W> {
     pub fn write_frame(&mut self, image: &PNGImage, frame: Frame) -> APNGResult<()> {
         let image_buffer = ImageBuffer::new(&self.config, image)?;
         if self.seq_num == 0 {
-            self.write_fc_tl(Some(&frame))?;
-            self.write_idats(&image_buffer)?;
+            self.write_first_frame(&image_buffer, Some(&frame))
         } else {
-            self.write_fc_tl(Some(&frame))?;
-            self.write_fd_at(&image_buffer)?;
+            self.write_rest_frame(&image_buffer, Some(&frame))
         }
+    }
 
-        Ok(())
+    fn write_first_frame(
+        &mut self,
+        image_buffer: &ImageBuffer,
+        frame: Option<&Frame>,
+    ) -> APNGResult<()> {
+        self.write_fc_tl(frame)?;
+        self.write_idats(image_buffer)
+    }
+
+    fn write_rest_frame(
+        &mut self,
+        image_buffer: &ImageBuffer,
+        frame: Option<&Frame>,
+    ) -> APNGResult<()> {
+        self.write_fc_tl(frame)?;
+        self.write_fd_at(&image_buffer)
     }
 
     // finish encode, write end chunk on the last line.
