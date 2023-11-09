@@ -41,14 +41,14 @@ impl Config {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Encoder<'a, W: io::Write> {
+pub struct Encoder<W: io::Write> {
     config: Config,
-    w: &'a mut W,
+    w: W,
     seq_num: u32,
 }
 
-impl<'a, W: io::Write> Encoder<'a, W> {
-    pub fn new(writer: &'a mut W, config: Config) -> APNGResult<Self> {
+impl<W: io::Write> Encoder<W> {
+    pub fn new(writer: W, config: Config) -> APNGResult<Self> {
         let mut e = Encoder {
             config,
             w: writer,
