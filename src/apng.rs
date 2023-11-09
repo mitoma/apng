@@ -63,12 +63,13 @@ impl<W: io::Write> Encoder<W> {
     // all png images encode to apng
     pub fn encode_all(&mut self, images: Vec<PNGImage>, frame: Option<&Frame>) -> APNGResult<()> {
         for (i, v) in images.iter().enumerate() {
+            let image_buffer = ImageBuffer::new(&self.config, v)?;
             if i == 0 {
                 self.write_fc_tl(frame)?;
-                self.write_idats(&v.data)?;
+                self.write_idats(&image_buffer)?;
             } else {
                 self.write_fc_tl(frame)?;
-                self.write_fd_at(&v.data)?;
+                self.write_fd_at(&image_buffer)?;
             }
         }
         self.write_iend()?;
@@ -77,12 +78,13 @@ impl<W: io::Write> Encoder<W> {
 
     // write each frame control
     pub fn write_frame(&mut self, image: &PNGImage, frame: Frame) -> APNGResult<()> {
+        let image_buffer = ImageBuffer::new(&self.config, image)?;
         if self.seq_num == 0 {
             self.write_fc_tl(Some(&frame))?;
-            self.write_idats(&image.data)?;
+            self.write_idats(&image_buffer)?;
         } else {
             self.write_fc_tl(Some(&frame))?;
-            self.write_fd_at(&image.data)?;
+            self.write_fd_at(&image_buffer)?;
         }
 
         Ok(())
@@ -149,48 +151,18 @@ impl<W: io::Write> Encoder<W> {
         Ok(())
     }
 
-    fn write_fd_at(&mut self, data: &[u8]) -> APNGResult<()> {
+    fn write_fd_at(&mut self, data: &ImageBuffer) -> APNGResult<()> {
         let mut buf = vec![];
         buf.write_u32::<BigEndian>(self.seq_num)?;
-        self.make_image_buffer(data, &mut buf)?;
+        buf.write_all(&data.0)?;
         self.write_chunk(&buf, *b"fdAT")?;
         self.seq_num += 1;
         Ok(())
     }
 
     // Writes the image data.
-    fn write_idats(&mut self, data: &[u8]) -> APNGResult<()> {
-        let mut buf = vec![];
-        self.make_image_buffer(data, &mut buf)?;
-        self.write_chunk(&buf, *b"IDAT")?;
-        Ok(())
-    }
-
-    fn make_image_buffer(&self, data: &[u8], buf: &mut Vec<u8>) -> APNGResult<()> {
-        let bpp = self.config.bytes_per_pixel();
-        let in_len = self.config.raw_row_length() - 1;
-
-        let mut prev = vec![0; in_len];
-        let mut current = vec![0; in_len];
-
-        let data_size = in_len * self.config.height as usize;
-        if data_size != data.len() {
-            return Err(APNGError::WrongDataSize(data_size, data.len()));
-        }
-
-        let mut zlib = ZlibEncoder::new(buf, Compression::best());
-        let filter_method = self.config.filter;
-
-        for line in data.chunks(in_len) {
-            current.copy_from_slice(line);
-            zlib.write_all(&[filter_method as u8])?;
-            filter(filter_method, bpp, &prev, &mut current);
-            zlib.write_all(&current)?;
-            mem::swap(&mut prev, &mut current);
-        }
-
-        zlib.finish()?;
-        Ok(())
+    fn write_idats(&mut self, data: &ImageBuffer) -> APNGResult<()> {
+        self.write_chunk(&data.0, *b"IDAT")
     }
 
     // write chunk data 4 field
@@ -310,5 +282,38 @@ pub fn filter(method: png::FilterType, bpp: usize, previous: &[u8], current: &mu
                 current[i] = current[i].wrapping_sub(filter_path(0, previous[i], 0));
             }
         }
+    }
+}
+
+struct ImageBuffer(Vec<u8>);
+
+impl ImageBuffer {
+    fn new(config: &Config, png_image: &PNGImage) -> APNGResult<ImageBuffer> {
+        let data = &png_image.data;
+        let mut buf = Vec::new();
+        let bpp = config.bytes_per_pixel();
+        let in_len = config.raw_row_length() - 1;
+
+        let mut prev = vec![0; in_len];
+        let mut current = vec![0; in_len];
+
+        let data_size = in_len * config.height as usize;
+        if data_size != data.len() {
+            return Err(APNGError::WrongDataSize(data_size, data.len()));
+        }
+
+        let mut zlib = ZlibEncoder::new(&mut buf, Compression::best());
+        let filter_method = config.filter;
+
+        for line in data.chunks(in_len) {
+            current.copy_from_slice(line);
+            zlib.write_all(&[filter_method as u8])?;
+            filter(filter_method, bpp, &prev, &mut current);
+            zlib.write_all(&current)?;
+            mem::swap(&mut prev, &mut current);
+        }
+
+        zlib.finish()?;
+        Ok(ImageBuffer(buf))
     }
 }
