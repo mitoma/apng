@@ -1,0 +1,6 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "./examples/encode_all/Cargo.toml",
+        "./examples/each_frame_speed/Cargo.toml"
+    ]
+}
