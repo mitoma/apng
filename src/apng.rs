@@ -41,51 +41,65 @@ impl Config {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Encoder<'a, W: io::Write> {
+pub struct Encoder<W: io::Write> {
     config: Config,
-    w: &'a mut W,
+    w: W,
     seq_num: u32,
 }
 
-impl<'a, W: io::Write> Encoder<'a, W> {
-    pub fn new(writer: &'a mut W, config: Config) -> APNGResult<Self> {
+impl<W: io::Write> Encoder<W> {
+    pub fn new(writer: W, config: Config) -> APNGResult<Self> {
         let mut e = Encoder {
             config,
             w: writer,
             seq_num: 0,
         };
-        Self::write_png_header(&mut e)?;
-        Self::write_ihdr(&mut e)?;
-        Self::write_ac_tl(&mut e)?;
+        e.write_png_header()?;
+        e.write_ihdr()?;
+        e.write_ac_tl()?;
         Ok(e)
     }
 
     // all png images encode to apng
     pub fn encode_all(&mut self, images: Vec<PNGImage>, frame: Option<&Frame>) -> APNGResult<()> {
         for (i, v) in images.iter().enumerate() {
+            let image_buffer = ImageBuffer::new(&self.config, v)?;
             if i == 0 {
-                Self::write_fc_tl(self, frame)?;
-                Self::write_idats(self, &v.data)?;
+                self.write_first_frame(&image_buffer, frame)?;
             } else {
-                Self::write_fc_tl(self, frame)?;
-                Self::write_fd_at(self, &v.data)?;
+                self.write_rest_frame(&image_buffer, frame)?;
             }
         }
-        Self::write_iend(self)?;
+        self.write_iend()?;
         Ok(())
     }
 
     // write each frame control
     pub fn write_frame(&mut self, image: &PNGImage, frame: Frame) -> APNGResult<()> {
+        let image_buffer = ImageBuffer::new(&self.config, image)?;
         if self.seq_num == 0 {
-            Self::write_fc_tl(self, Some(&frame))?;
-            Self::write_idats(self, &image.data)?;
+            self.write_first_frame(&image_buffer, Some(&frame))
         } else {
-            Self::write_fc_tl(self, Some(&frame))?;
-            Self::write_fd_at(self, &image.data)?;
+            self.write_rest_frame(&image_buffer, Some(&frame))
         }
+    }
 
-        Ok(())
+    fn write_first_frame(
+        &mut self,
+        image_buffer: &ImageBuffer,
+        frame: Option<&Frame>,
+    ) -> APNGResult<()> {
+        self.write_fc_tl(frame)?;
+        self.write_idats(image_buffer)
+    }
+
+    fn write_rest_frame(
+        &mut self,
+        image_buffer: &ImageBuffer,
+        frame: Option<&Frame>,
+    ) -> APNGResult<()> {
+        self.write_fc_tl(frame)?;
+        self.write_fd_at(&image_buffer)
     }
 
     // finish encode, write end chunk on the last line.
@@ -98,7 +112,7 @@ impl<'a, W: io::Write> Encoder<'a, W> {
             ));
         }
 
-        Self::write_iend(self)
+        self.write_iend()
     }
 
     fn write_png_header(&mut self) -> APNGResult<()> {
@@ -149,48 +163,18 @@ impl<'a, W: io::Write> Encoder<'a, W> {
         Ok(())
     }
 
-    fn write_fd_at(&mut self, data: &[u8]) -> APNGResult<()> {
+    fn write_fd_at(&mut self, data: &ImageBuffer) -> APNGResult<()> {
         let mut buf = vec![];
         buf.write_u32::<BigEndian>(self.seq_num)?;
-        self.make_image_buffer(data, &mut buf)?;
+        buf.write_all(&data.0)?;
         self.write_chunk(&buf, *b"fdAT")?;
         self.seq_num += 1;
         Ok(())
     }
 
     // Writes the image data.
-    fn write_idats(&mut self, data: &[u8]) -> APNGResult<()> {
-        let mut buf = vec![];
-        self.make_image_buffer(data, &mut buf)?;
-        self.write_chunk(&buf, *b"IDAT")?;
-        Ok(())
-    }
-
-    fn make_image_buffer(&mut self, data: &[u8], buf: &mut Vec<u8>) -> APNGResult<()> {
-        let bpp = self.config.bytes_per_pixel();
-        let in_len = self.config.raw_row_length() - 1;
-
-        let mut prev = vec![0; in_len];
-        let mut current = vec![0; in_len];
-
-        let data_size = in_len * self.config.height as usize;
-        if data_size != data.len() {
-            return Err(APNGError::WrongDataSize(data_size, data.len()));
-        }
-
-        let mut zlib = ZlibEncoder::new(buf, Compression::best());
-        let filter_method = self.config.filter;
-
-        for line in data.chunks(in_len) {
-            current.copy_from_slice(line);
-            zlib.write_all(&[filter_method as u8])?;
-            filter(filter_method, bpp, &prev, &mut current);
-            zlib.write_all(&current)?;
-            mem::swap(&mut prev, &mut current);
-        }
-
-        zlib.finish()?;
-        Ok(())
+    fn write_idats(&mut self, data: &ImageBuffer) -> APNGResult<()> {
+        self.write_chunk(&data.0, *b"IDAT")
     }
 
     // write chunk data 4 field
@@ -310,5 +294,38 @@ pub fn filter(method: png::FilterType, bpp: usize, previous: &[u8], current: &mu
                 current[i] = current[i].wrapping_sub(filter_path(0, previous[i], 0));
             }
         }
+    }
+}
+
+struct ImageBuffer(Vec<u8>);
+
+impl ImageBuffer {
+    fn new(config: &Config, png_image: &PNGImage) -> APNGResult<ImageBuffer> {
+        let data = &png_image.data;
+        let mut buf = Vec::new();
+        let bpp = config.bytes_per_pixel();
+        let in_len = config.raw_row_length() - 1;
+
+        let mut prev = vec![0; in_len];
+        let mut current = vec![0; in_len];
+
+        let data_size = in_len * config.height as usize;
+        if data_size != data.len() {
+            return Err(APNGError::WrongDataSize(data_size, data.len()));
+        }
+
+        let mut zlib = ZlibEncoder::new(&mut buf, Compression::best());
+        let filter_method = config.filter;
+
+        for line in data.chunks(in_len) {
+            current.copy_from_slice(line);
+            zlib.write_all(&[filter_method as u8])?;
+            filter(filter_method, bpp, &prev, &mut current);
+            zlib.write_all(&current)?;
+            mem::swap(&mut prev, &mut current);
+        }
+
+        zlib.finish()?;
+        Ok(ImageBuffer(buf))
     }
 }
