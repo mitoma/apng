@@ -3,8 +3,10 @@ use byteorder::{BigEndian, WriteBytesExt};
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use flate2::Crc;
+use rayon_ordered_bridge::bounded_parralel_map_channel;
 use std::io::{self, Write};
 use std::mem;
+use std::sync::mpsc::SyncSender;
 
 use crate::png::PNGImage;
 
@@ -47,7 +49,7 @@ pub struct Encoder<W: io::Write> {
     seq_num: u32,
 }
 
-impl<W: io::Write> Encoder<W> {
+impl<W: io::Write + Send> Encoder<W> {
     pub fn new(writer: W, config: Config) -> APNGResult<Self> {
         let mut e = Encoder {
             config,
@@ -58,6 +60,51 @@ impl<W: io::Write> Encoder<W> {
         e.write_ihdr()?;
         e.write_ac_tl()?;
         Ok(e)
+    }
+
+    pub fn encode_parallel<F>(
+        writer: W,
+        config: Config,
+        default_frame: Option<Frame>,
+        image_callback: F,
+    ) -> APNGResult<()>
+    where
+        F: Fn(SyncSender<(PNGImage, Option<Frame>)>) -> (),
+        F: Send,
+    {
+        rayon::scope(move |s| {
+            let config_for_each_image = config.clone();
+            let (tx, rx) = bounded_parralel_map_channel(
+                s,
+                32,
+                move |(png_image, frame): (PNGImage, Option<Frame>)| {
+                    (
+                        ImageBuffer::new(&config_for_each_image, &png_image).unwrap(),
+                        frame,
+                    )
+                },
+            );
+
+            s.spawn(move |_| {
+                image_callback(tx.clone());
+            });
+
+            let mut encoder = Self::new(writer, config.clone()).unwrap();
+            for (idx, (image_buffer, frame)) in rx.iter().enumerate() {
+                if idx == 0 {
+                    encoder
+                        .write_first_frame(&image_buffer, frame.as_ref().or(default_frame.as_ref()))
+                        .unwrap();
+                } else {
+                    encoder
+                        .write_rest_frame(&image_buffer, frame.as_ref().or(default_frame.as_ref()))
+                        .unwrap();
+                }
+            }
+            encoder.finish_encode().unwrap();
+        });
+
+        Ok(())
     }
 
     // all png images encode to apng
@@ -230,6 +277,22 @@ pub fn create_config(images: &Vec<PNGImage>, plays: Option<u32>) -> APNGResult<C
         num_plays: plays.unwrap_or(0),
         color: default_image.color_type,
         depth: default_image.bit_depth,
+        filter: png::FilterType::NoFilter, //default
+    })
+}
+
+pub fn create_config_with_num_frames(
+    image: &PNGImage,
+    num_frames: u32,
+    plays: Option<u32>,
+) -> APNGResult<Config> {
+    Ok(Config {
+        width: image.width,
+        height: image.height,
+        num_frames,
+        num_plays: plays.unwrap_or(0),
+        color: image.color_type,
+        depth: image.bit_depth,
         filter: png::FilterType::NoFilter, //default
     })
 }
