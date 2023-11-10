@@ -5,7 +5,7 @@ use std::io::{BufWriter, Read};
 use std::path::Path;
 
 fn main() {
-    let files = vec![
+    let files = [
         "../_rust_logo/rust_logo1.png",
         "../_rust_logo/rust_logo2.png",
         "../_rust_logo/rust_logo3.png",
