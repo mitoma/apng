@@ -25,7 +25,7 @@ fn main() {
 }
 
 fn encode_all() {
-    let files = vec![
+    let files = [
         "../_rust_logo/rust_logo1.png",
         "../_rust_logo/rust_logo2.png",
         "../_rust_logo/rust_logo3.png",
@@ -67,24 +67,17 @@ fn encode_all() {
 }
 
 fn encorde_parallel() {
-    let mut file = File::open("../_rust_logo/rust_logo1.png").unwrap();
-    let mut buffer = vec![];
-    file.read_to_end(&mut buffer).unwrap();
-    let img = image::load_from_memory(&buffer).unwrap();
-    let png_image = load_dynamic_image(img).unwrap();
-
     let path = Path::new(r"out2.png");
     let out = BufWriter::new(File::create(path).unwrap());
 
-    let config = apng::create_config_with_num_frames(&png_image, 6, None).unwrap();
     let frame = Frame {
         delay_num: Some(1),
         delay_den: Some(2),
         ..Default::default()
     };
 
-    apng::Encoder::encode_parallel(out, config, Some(frame), move |sender| {
-        let files = vec![
+    apng::Encoder::encode_parallel(out, Some(frame), 6, None, move |sender| {
+        let files = [
             "../_rust_logo/rust_logo1.png",
             "../_rust_logo/rust_logo2.png",
             "../_rust_logo/rust_logo3.png",

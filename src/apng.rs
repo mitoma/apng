@@ -6,6 +6,7 @@ use flate2::Crc;
 use rayon_ordered_bridge::bounded_parralel_map_channel;
 use std::io::{self, Write};
 use std::mem;
+use std::sync::mpsc::sync_channel;
 use std::sync::mpsc::SyncSender;
 
 use crate::png::PNGImage;
@@ -64,46 +65,54 @@ impl<W: io::Write + Send> Encoder<W> {
 
     pub fn encode_parallel<F>(
         writer: W,
-        config: Config,
         default_frame: Option<Frame>,
+        num_frames: u32,
+        plays: Option<u32>,
         image_callback: F,
     ) -> APNGResult<()>
     where
-        F: Fn(SyncSender<(PNGImage, Option<Frame>)>) -> (),
-        F: Send,
+        F: Fn(SyncSender<(PNGImage, Option<Frame>)>),
+        F: Send + 'static,
     {
-        rayon::scope(move |s| {
-            let config_for_each_image = config.clone();
-            let (tx, rx) = bounded_parralel_map_channel(
-                s,
-                32,
-                move |(png_image, frame): (PNGImage, Option<Frame>)| {
-                    (
-                        ImageBuffer::new(&config_for_each_image, &png_image).unwrap(),
-                        frame,
-                    )
-                },
-            );
+        let (source_tx, source_rx) = sync_channel::<(PNGImage, Option<Frame>)>(0);
+        let (convert_tx, convert_rx) = bounded_parralel_map_channel(
+            32,
+            move |(png_image, frame, config): (PNGImage, Option<Frame>, Config)| {
+                (
+                    ImageBuffer::new(&config, &png_image).unwrap(),
+                    frame,
+                    config,
+                )
+            },
+        );
 
-            s.spawn(move |_| {
-                image_callback(tx.clone());
-            });
-
-            let mut encoder = Self::new(writer, config.clone()).unwrap();
-            for (idx, (image_buffer, frame)) in rx.iter().enumerate() {
-                if idx == 0 {
-                    encoder
-                        .write_first_frame(&image_buffer, frame.as_ref().or(default_frame.as_ref()))
-                        .unwrap();
-                } else {
-                    encoder
-                        .write_rest_frame(&image_buffer, frame.as_ref().or(default_frame.as_ref()))
-                        .unwrap();
-                }
+        rayon::spawn(move || {
+            let (first_image, frame) = source_rx.recv().unwrap();
+            let config = create_config_with_num_frames(&first_image, num_frames, plays).unwrap();
+            convert_tx
+                .send((first_image, frame, config.clone()))
+                .unwrap();
+            for (image, frame) in source_rx.iter() {
+                convert_tx.send((image, frame, config.clone())).unwrap();
             }
-            encoder.finish_encode().unwrap();
         });
 
+        rayon::spawn(move || {
+            image_callback(source_tx);
+        });
+
+        let (image, frame, config) = convert_rx.recv().unwrap();
+        let mut encoder = Self::new(writer, config).unwrap();
+        encoder
+            .write_first_frame(&image, frame.as_ref().or(default_frame.as_ref()))
+            .unwrap();
+
+        for (image_buffer, frame, _config) in convert_rx.iter() {
+            encoder
+                .write_rest_frame(&image_buffer, frame.as_ref().or(default_frame.as_ref()))
+                .unwrap();
+        }
+        encoder.finish_encode().unwrap();
         Ok(())
     }
 
@@ -146,7 +155,7 @@ impl<W: io::Write + Send> Encoder<W> {
         frame: Option<&Frame>,
     ) -> APNGResult<()> {
         self.write_fc_tl(frame)?;
-        self.write_fd_at(&image_buffer)
+        self.write_fd_at(image_buffer)
     }
 
     // finish encode, write end chunk on the last line.
