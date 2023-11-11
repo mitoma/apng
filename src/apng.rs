@@ -3,10 +3,12 @@ use byteorder::{BigEndian, WriteBytesExt};
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use flate2::Crc;
+use rayon_ordered_bridge::bounded_parralel_map;
 use rayon_ordered_bridge::bounded_parralel_map_channel;
 use std::io::{self, Write};
 use std::mem;
 use std::sync::mpsc::sync_channel;
+use std::sync::mpsc::Receiver;
 use std::sync::mpsc::SyncSender;
 
 use crate::png::PNGImage;
@@ -43,6 +45,62 @@ impl Config {
     }
 }
 
+pub struct ParallelEncoder<W>
+where
+    W: io::Write,
+{
+    encoder: Encoder<W>,
+    source_rx: Receiver<PNGImage>,
+    default_frame: Option<Frame>,
+    channel_bound: Option<usize>,
+}
+
+impl<W: io::Write> ParallelEncoder<W> {
+    const DEFAULT_CHANNEL_BOUND: usize = 32;
+
+    pub fn new(
+        writer: W,
+        image: PNGImage,
+        default_frame: Option<Frame>,
+        num_frames: u32,
+        plays: Option<u32>,
+        channel_bound: Option<usize>,
+    ) -> APNGResult<(ParallelEncoder<W>, SyncSender<PNGImage>)> {
+        let (source_tx, source_rx) =
+            sync_channel(channel_bound.unwrap_or(Self::DEFAULT_CHANNEL_BOUND));
+        let config = create_config_with_num_frames(&image, num_frames, plays)?;
+        let image_buffer = ImageBuffer::new(&config, &image)?;
+        let mut encoder = Encoder::new(writer, config)?;
+        encoder.write_first_frame(&image_buffer, default_frame.as_ref())?;
+        Ok((
+            ParallelEncoder {
+                encoder,
+                source_rx,
+                default_frame,
+                channel_bound,
+            },
+            source_tx,
+        ))
+    }
+
+    pub fn encode(mut self) -> APNGResult<()> {
+        let config = self.encoder.config.clone();
+        let default_frame = self.default_frame.clone();
+        let result = bounded_parralel_map(
+            self.channel_bound.unwrap_or(Self::DEFAULT_CHANNEL_BOUND),
+            self.source_rx.into_iter(),
+            move |image| ImageBuffer::new(&config, &image).unwrap(),
+        );
+        for buf in result.iter() {
+            self.encoder
+                .write_rest_frame(&buf, default_frame.as_ref())
+                .unwrap();
+        }
+        self.encoder.finish_encode()?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Encoder<W: io::Write> {
     config: Config,
@@ -50,7 +108,7 @@ pub struct Encoder<W: io::Write> {
     seq_num: u32,
 }
 
-impl<W: io::Write + Send> Encoder<W> {
+impl<W: io::Write> Encoder<W> {
     pub fn new(writer: W, config: Config) -> APNGResult<Self> {
         let mut e = Encoder {
             config,
