@@ -66,8 +66,7 @@ impl<W: io::Write> ParallelEncoder<W> {
         plays: Option<u32>,
         channel_bound: Option<usize>,
     ) -> APNGResult<(ParallelEncoder<W>, SyncSender<PNGImage>)> {
-        let (source_tx, source_rx) =
-            sync_channel(channel_bound.unwrap_or(Self::DEFAULT_CHANNEL_BOUND));
+        let (source_tx, source_rx) = sync_channel(0);
         let config = create_config_with_num_frames(&image, num_frames, plays)?;
         let image_buffer = ImageBuffer::new(&config, &image)?;
         let mut encoder = Encoder::new(writer, config)?;
