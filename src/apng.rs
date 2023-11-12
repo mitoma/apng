@@ -5,11 +5,14 @@ use flate2::Compression;
 use flate2::Crc;
 use rayon_ordered_bridge::bounded_parralel_map;
 use rayon_ordered_bridge::bounded_parralel_map_channel;
+use std::fs::File;
+use std::io::BufWriter;
 use std::io::{self, Write};
 use std::mem;
+use std::path::PathBuf;
 use std::sync::mpsc::sync_channel;
-use std::sync::mpsc::Receiver;
 use std::sync::mpsc::SyncSender;
+use std::thread::JoinHandle;
 
 use crate::png::PNGImage;
 
@@ -45,58 +48,57 @@ impl Config {
     }
 }
 
-pub struct ParallelEncoder<W>
-where
-    W: io::Write,
-{
-    encoder: Encoder<W>,
-    source_rx: Receiver<PNGImage>,
-    default_frame: Option<Frame>,
-    channel_bound: Option<usize>,
+pub struct ParallelEncoder {
+    source_tx: SyncSender<PNGImage>,
+    handler: JoinHandle<()>,
 }
 
-impl<W: io::Write> ParallelEncoder<W> {
+impl ParallelEncoder {
     const DEFAULT_CHANNEL_BOUND: usize = 32;
 
     pub fn new(
-        writer: W,
+        path: PathBuf,
         image: PNGImage,
         default_frame: Option<Frame>,
         num_frames: u32,
         plays: Option<u32>,
         channel_bound: Option<usize>,
-    ) -> APNGResult<(ParallelEncoder<W>, SyncSender<PNGImage>)> {
+    ) -> APNGResult<ParallelEncoder> {
         let (source_tx, source_rx) = sync_channel(0);
-        let config = create_config_with_num_frames(&image, num_frames, plays)?;
-        let image_buffer = ImageBuffer::new(&config, &image)?;
-        let mut encoder = Encoder::new(writer, config)?;
-        encoder.write_first_frame(&image_buffer, default_frame.as_ref())?;
-        Ok((
-            ParallelEncoder {
-                encoder,
-                source_rx,
-                default_frame,
-                channel_bound,
-            },
-            source_tx,
-        ))
+
+        let handler = std::thread::spawn(move || {
+            let writer = BufWriter::new(File::create(&path).unwrap());
+
+            let config = create_config_with_num_frames(&image, num_frames, plays).unwrap();
+            let image_buffer = ImageBuffer::new(&config, &image).unwrap();
+            let mut encoder = Encoder::new(writer, config.clone()).unwrap();
+            encoder
+                .write_first_frame(&image_buffer, default_frame.as_ref())
+                .unwrap();
+
+            let (result, _waiter) = bounded_parralel_map(
+                channel_bound.unwrap_or(Self::DEFAULT_CHANNEL_BOUND),
+                source_rx.into_iter(),
+                move |image| ImageBuffer::new(&config, &image).unwrap(),
+            );
+
+            for buf in result.iter() {
+                encoder
+                    .write_rest_frame(&buf, default_frame.as_ref())
+                    .unwrap();
+            }
+            encoder.finish_encode().unwrap();
+        });
+        Ok(ParallelEncoder { source_tx, handler })
     }
 
-    pub fn encode(mut self) -> APNGResult<()> {
-        let config = self.encoder.config.clone();
-        let default_frame = self.default_frame.clone();
-        let result = bounded_parralel_map(
-            self.channel_bound.unwrap_or(Self::DEFAULT_CHANNEL_BOUND),
-            self.source_rx.into_iter(),
-            move |image| ImageBuffer::new(&config, &image).unwrap(),
-        );
-        for buf in result.iter() {
-            self.encoder
-                .write_rest_frame(&buf, default_frame.as_ref())
-                .unwrap();
-        }
-        self.encoder.finish_encode()?;
-        Ok(())
+    pub fn send(&self, image: PNGImage) {
+        self.source_tx.send(image).unwrap();
+    }
+
+    pub fn finalize(self) {
+        drop(self.source_tx);
+        self.handler.join().unwrap();
     }
 }
 
@@ -132,7 +134,7 @@ impl<W: io::Write> Encoder<W> {
         F: Send + 'static,
     {
         let (source_tx, source_rx) = sync_channel::<(PNGImage, Option<Frame>)>(0);
-        let (convert_tx, convert_rx) = bounded_parralel_map_channel(
+        let (convert_tx, convert_rx, _waiter) = bounded_parralel_map_channel(
             32,
             move |(png_image, frame, config): (PNGImage, Option<Frame>, Config)| {
                 (
