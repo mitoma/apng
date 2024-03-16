@@ -333,7 +333,7 @@ pub enum BlendOp {
     ApngBlendOpOver = 1,
 }
 
-pub fn create_config(images: &Vec<PNGImage>, plays: Option<u32>) -> APNGResult<Config> {
+pub fn create_config(images: &[PNGImage], plays: Option<u32>) -> APNGResult<Config> {
     if images.is_empty() {
         return Err(APNGError::ImagesNotFound);
     }
