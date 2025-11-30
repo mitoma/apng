@@ -1,8 +1,8 @@
 use super::errors::{APNGError, APNGResult};
 use byteorder::{BigEndian, WriteBytesExt};
-use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use flate2::Crc;
+use flate2::write::ZlibEncoder;
 use rayon_ordered_bridge::bounded_parralel_map;
 use rayon_ordered_bridge::bounded_parralel_map_channel;
 use std::fs::File;
@@ -10,8 +10,8 @@ use std::io::BufWriter;
 use std::io::{self, Write};
 use std::mem;
 use std::path::PathBuf;
-use std::sync::mpsc::sync_channel;
 use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::sync_channel;
 use std::thread::JoinHandle;
 
 use crate::png::PNGImage;
@@ -26,7 +26,7 @@ pub struct Config {
     pub num_plays: u32,
     pub color: png::ColorType,
     pub depth: png::BitDepth,
-    pub filter: png::FilterType,
+    pub filter: png::Filter,
 }
 
 impl Config {
@@ -345,7 +345,7 @@ pub fn create_config(images: &[PNGImage], plays: Option<u32>) -> APNGResult<Conf
         num_plays: plays.unwrap_or(0),
         color: default_image.color_type,
         depth: default_image.bit_depth,
-        filter: png::FilterType::NoFilter, //default
+        filter: png::Filter::NoFilter, //default
     })
 }
 
@@ -361,7 +361,7 @@ pub fn create_config_with_num_frames(
         num_plays: plays.unwrap_or(0),
         color: image.color_type,
         depth: image.bit_depth,
-        filter: png::FilterType::NoFilter, //default
+        filter: png::Filter::NoFilter, //default
     })
 }
 
@@ -385,8 +385,8 @@ fn filter_path(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
-pub fn filter(method: png::FilterType, bpp: usize, previous: &[u8], current: &mut [u8]) {
-    use png::FilterType::*;
+pub fn filter(method: png::Filter, bpp: usize, previous: &[u8], current: &mut [u8]) {
+    use png::Filter::*;
     assert!(bpp > 0);
     let len = current.len();
 
@@ -425,6 +425,11 @@ pub fn filter(method: png::FilterType, bpp: usize, previous: &[u8], current: &mu
                 current[i] = current[i].wrapping_sub(filter_path(0, previous[i], 0));
             }
         }
+        Adaptive => {
+            // This is not actually used in PNG encoding.
+            panic!("Adaptive filter is not supported for encoding.");
+        }
+        _ => todo!(),
     }
 }
 

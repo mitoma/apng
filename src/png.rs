@@ -1,7 +1,7 @@
 use super::errors::{AppError, AppResult};
 use image::{DynamicImage, GenericImageView};
 use png::BitDepth;
-use std::fs::File;
+use std::{fs::File, io};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PNGImage {
@@ -29,10 +29,11 @@ pub fn load_dynamic_image(img: image::DynamicImage) -> AppResult<PNGImage> {
 // make PNGImage from png image decoder
 pub fn load_png(filepath: &str) -> AppResult<PNGImage> {
     let file = File::open(filepath).unwrap();
-    let decoder = png::Decoder::new(file);
+    let reader = io::BufReader::new(file);
+    let decoder = png::Decoder::new(reader);
     let mut reader = decoder.read_info().unwrap();
 
-    let mut buf = vec![0; reader.output_buffer_size()];
+    let mut buf = vec![0; reader.output_buffer_size().unwrap()];
 
     // read the frame
     let info = reader.next_frame(&mut buf).unwrap();
