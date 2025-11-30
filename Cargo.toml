@@ -2,11 +2,12 @@
 name = "apng"
 version = "0.3.1"
 authors = ["poccariswet <poccariswet2727@gmail.com>"]
-edition = "2021"
+edition = "2024"
 description = "APNG Encoder. But it is tiny yet."
 license = "MIT"
 repository = "https://github.com/poccariswet/apng"
 readme = "README.md"
+resolver = "2"
 
 [dependencies]
 png = "0.18.0"
