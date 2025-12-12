@@ -230,6 +230,10 @@ impl<W: io::Write> Encoder<W> {
         self.write_iend()
     }
 
+    pub fn get_writer(self) ->  W {
+        self.w
+    }
+
     fn write_png_header(&mut self) -> APNGResult<()> {
         self.w.write_all(b"\x89PNG\r\n\x1a\n")?;
         Ok(())
